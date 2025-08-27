@@ -11,6 +11,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -19,30 +20,43 @@ import (
 Jotti Uploader - Tool to upload files to https://virusscan.jotti.org
 Jotti is an alternative to VirusTotal
 by cyclone
-https://github.com/cyclone-github/jottiUploader
-change log:
-v2023-11-10.1800; initial version
-v2023-11-11.1800; cleaned up code; github release
+https://github.com/cyclone-github/jotti
+
+changelog:
+v2023-11-10.1800
+	initial version
+v2023-11-11.1800
+	cleaned up code
+	github release
+v1.0.0; 2025-08-27
+	stable v1.0.0 release
+	enforce Jotti's 250MB max file limit
+	added upload progress bar
+	added HTTP client timeout to avoid hangs
+	added non-zero exit on rate limit
+	tidied up logic in URL, filename, directory parsing
 */
 
 // global variables
 var (
-	jottiUploadURL   = "https://virusscan.jotti.org/en-US/submit-file"
-	jottiChecksumURL = "https://virusscan.jotti.org/en-US/search/hash/%s"
+	jottiUploadURL         = "https://virusscan.jotti.org/en-US/submit-file"
+	jottiChecksumURL       = "https://virusscan.jotti.org/en-US/search/hash/%s"
+	httpClient             = &http.Client{Timeout: 30 * time.Second}
+	maxUploadSize    int64 = 250 * 1024 * 1024 // enforce Jotti's 250MB max file limit
 )
 
 func versionFunc() {
-	fmt.Fprintln(os.Stderr, "Jotti Uploader v2023-11-11.1800")
-	fmt.Fprintln(os.Stderr, "https://github.com/cyclone-github/jottiUploader")
+	fmt.Fprintln(os.Stderr, "Jotti Uploader v1.0.0; 2025-08-27")
+	fmt.Fprintln(os.Stderr, "https://github.com/cyclone-github/jotti")
 }
 
 // help function
 func helpFunc() {
 	versionFunc()
 	str := "\nExample Usage:\n" +
-		"\n./jottiUploader {file_to_scan}\n" +
-		"\n./jottiUploader -help\n" +
-		"\n./jottiUploader -version\n"
+		"\n./jotti {file_to_scan}\n" +
+		"\n./jotti -help\n" +
+		"\n./jotti -version\n"
 	fmt.Fprintln(os.Stderr, str)
 	os.Exit(0)
 }
@@ -63,6 +77,57 @@ func calculateSHA1Checksum(filePath string) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
+type progressReader struct {
+	r        io.Reader
+	total    int64
+	read     int64
+	lastTick time.Time
+}
+
+const progressBarWidth = 20
+
+func (p *progressReader) Read(b []byte) (int, error) {
+	n, err := p.r.Read(b)
+	if n > 0 {
+		p.read += int64(n)
+		now := time.Now()
+		if now.Sub(p.lastTick) >= 150*time.Millisecond || p.read == p.total {
+			p.render()
+			p.lastTick = now
+		}
+	}
+
+	if err == io.EOF {
+		p.renderDone()
+	}
+	return n, err
+}
+
+func (p *progressReader) render() {
+	percent := float64(p.read) * 100 / float64(p.total)
+	filled := int(percent / (100 / progressBarWidth))
+	if filled > progressBarWidth {
+		filled = progressBarWidth
+	}
+	var bar [progressBarWidth]byte
+	for i := 0; i < progressBarWidth; i++ {
+		if i < filled {
+			bar[i] = '='
+		} else {
+			bar[i] = ' '
+		}
+	}
+	fmt.Fprintf(os.Stderr, "\rProgress: [%s] %6.2f%%", string(bar[:]), percent)
+}
+
+func (p *progressReader) renderDone() {
+	var bar [progressBarWidth]byte
+	for i := 0; i < progressBarWidth; i++ {
+		bar[i] = '='
+	}
+	fmt.Fprintf(os.Stderr, "\rProgress: [%s] 100.00%% (sent) - waiting response...", string(bar[:]))
+}
+
 // upload file to Jotti
 func uploadFile(filePath string) (string, error) {
 	file, err := os.Open(filePath)
@@ -73,27 +138,32 @@ func uploadFile(filePath string) (string, error) {
 
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
-	part, err := writer.CreateFormFile("sample-file[]", filePath)
+
+	part, err := writer.CreateFormFile("sample-file[]", filepath.Base(filePath))
 	if err != nil {
 		return "", err
 	}
-	_, err = io.Copy(part, file)
-	if err != nil {
+	if _, err = io.Copy(part, file); err != nil {
 		return "", err
 	}
-	err = writer.Close()
-	if err != nil {
+	if err = writer.Close(); err != nil {
 		return "", err
 	}
 
-	request, err := http.NewRequest("POST", jottiUploadURL, body)
+	raw := body.Bytes()
+	pr := &progressReader{
+		r:     bytes.NewReader(raw),
+		total: int64(len(raw)),
+	}
+
+	request, err := http.NewRequest("POST", jottiUploadURL, pr)
 	if err != nil {
 		return "", err
 	}
 	request.Header.Add("Content-Type", writer.FormDataContentType())
+	request.ContentLength = int64(len(raw))
 
-	client := &http.Client{}
-	response, err := client.Do(request)
+	response, err := httpClient.Do(request)
 	if err != nil {
 		return "", err
 	}
@@ -109,7 +179,8 @@ func uploadFile(filePath string) (string, error) {
 // check if SHA1 checksum exists on Jotti
 func checkJottiSearch(checksum string) (bool, string, error) {
 	searchURL := fmt.Sprintf(jottiChecksumURL, checksum)
-	response, err := http.Get(searchURL)
+
+	response, err := httpClient.Get(searchURL)
 	if err != nil {
 		return false, "", err
 	}
@@ -124,8 +195,8 @@ func checkJottiSearch(checksum string) (bool, string, error) {
 
 		if strings.Contains(body, "Too many requests") {
 			// rate limit detected, exit
-			fmt.Println("Rate limited by Jotti. Please try again in a few minutes.")
-			os.Exit(0)
+			fmt.Fprintln(os.Stderr, "Rate limited by Jotti. Please try again in a few minutes.")
+			os.Exit(2)
 		}
 
 		// search for "Hash not found" string
@@ -154,7 +225,7 @@ func main() {
 
 	// check for file in cli
 	if len(os.Args) < 2 {
-		log.Fatal("Usage: ./jottiUploader <file_to_scan>")
+		log.Fatal("Usage: ./jotti <file_to_scan>")
 	}
 	if *help {
 		helpFunc()
@@ -162,6 +233,21 @@ func main() {
 
 	// loop over each file
 	for _, filePath := range os.Args[1:] {
+		// enforce Jotti's 250MB max file limit before hashing/upload
+		fi, err := os.Stat(filePath)
+		if err != nil {
+			log.Printf("Error stat %s: %v\n", filePath, err)
+			continue
+		}
+		if fi.IsDir() {
+			log.Printf("Skipping directory: %s\n", filePath)
+			continue
+		}
+		if fi.Size() > maxUploadSize {
+			log.Printf("Skipping %s: file size %d exceeds 250MB limit\n", filePath, fi.Size())
+			continue
+		}
+
 		// calculate SHA1 checksum of file
 		checksum, err := calculateSHA1Checksum(filePath)
 		if err != nil {
@@ -188,7 +274,9 @@ func main() {
 			log.Printf("Error: %v\n", err)
 			continue
 		}
-		fmt.Print("OK\n", fmt.Sprintf(jottiChecksumURL, checksum+"\n"))
+
+		fmt.Println("OK")
+		fmt.Println(fmt.Sprintf(jottiChecksumURL, checksum))
 
 		// wait for nth sec
 		time.Sleep(1000 * time.Millisecond)
