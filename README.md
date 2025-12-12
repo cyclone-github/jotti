@@ -1,4 +1,4 @@
-[![Readme Card](https://github-readme-stats.vercel.app/api/pin/?username=cyclone-github&repo=jotti&theme=gruvbox)](https://github.com/cyclone-github/jotti/)
+[![Readme Card](https://github-readme-stats-fast.vercel.app/api/pin/?username=cyclone-github&repo=jotti&theme=gruvbox)](https://github.com/cyclone-github/jotti/)
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/cyclone-github/jotti)](https://goreportcard.com/report/github.com/cyclone-github/jotti)
 [![GitHub issues](https://img.shields.io/github/issues/cyclone-github/jotti.svg)](https://github.com/cyclone-github/jotti/issues)
