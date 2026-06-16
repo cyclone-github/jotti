@@ -7,6 +7,15 @@
 
 # jotti
 
+### Install latest published release:
+```
+go install github.com/cyclone-github/jotti@latest
+```
+### Install latest source code (bleeding edge):
+```
+go install github.com/cyclone-github/jotti@main
+```
+
 ```
 $ ./jotti_amd64.bin jotti_amd64.exe
 SHA1 Checksum: 7bbaea591789073aaf96ce2669e6238196cb9093

@@ -1,3 +1,3 @@
-module jotti
+module github.com/cyclone-github/jotti
 
-go 1.25.2
+go 1.26.2
